@@ -1,0 +1,73 @@
+#!/bin/sh
+
+# This script provides a front-end interface to pass (passwordstore.org)
+# using a tool such as rofi in Wayland, dmenu in X11, or fzf on the console.
+
+# This is a substantially modified version of the script included with pass.
+# It is somewhat more robust and supports Dash and OKSH as well as Bash.
+
+# To the extent that my modifications give rise to intellectual property:
+# Copyright 2021 Jonathan Bakke. All rights disclaimed; no warranties made.
+# You may also opt to license any remaining rights via the MIT license.
+
+which() { command -v "$1" >/dev/null 2>&1; }
+which pass || { echo "Requires pass."; exit; }
+
+# Defaults to writing password to topmost window
+# Use --copy to prefer copying to a clipboard;
+# or --term to prefer letting pass decide how to handle output.
+typeit=1
+if [ $# -gt 0 ]; then
+	[ "$1" = "--copy" ] && { typeit=0; shift; }
+	[ "$1" = "--term" ] && { typeit=-1; shift; }
+fi
+
+# Identify tools to use
+if [ -n "$WAYLAND_DISPLAY" ]; then
+	which dmenu-wl && selector=dmenu-wl
+	[ -z "$selector" ] && which rofi && selector="rofi -dmenu"
+	which wtype && typist="wtype -"
+	[ -z "$typist" ] && which ydotool && typist="ydotool type --file -"
+elif [ -n "$DISPLAY" ]; then
+	which dmenu && selector="dmenu"
+fi
+[ -z "$selector" ] && which fzf && selector="fzf -q"
+[ -z "$selector" ] && { echo "Requires a selector. Try dmenu or fzf."; exit; }
+
+[ -z "$typist" ] && which xdotool && \
+	typist="xdotool type --clearmodifiers -"
+
+# fzf requires a query if -q is present
+[ $# -eq 0 ] && [ -z "${selector%fzf *}" ] && selector=fzf
+
+# Identify list of potential passwords to retrieve
+curdir="$PWD"
+prefix=${PASSWORD_STORE_DIR:-$HOME/.password-store}
+cd "$prefix" || { echo "Could not find pass directory."; exit; }
+listing='*.gpg'
+password="$(
+	# test whether $listing will expand
+	while [ ! "$(echo $listing)" = "$listing" ]; do
+		for i in $(echo "$listing"); do
+			echo "${i%.gpg}"
+		done
+		# increase folder search depth
+		listing='*/'"$listing"
+	done | $selector "$@"
+	)"
+cd "$curdir"
+
+[ -z "$password" ] && exit
+# fzf sends a newline before the result; strip it
+[ -z "${selector%fzf*}" ] && password="${password#\
+?}"
+
+if [ "$typeit" -eq -1 ] || { [ -c /dev/tty ] && [ -z "$typist" ]; }; then
+	pass show "$password" 2>/dev/null
+elif [ "$typeit" -eq 0 ] || [ -z "$typist" ]; then
+	pass show -c "$password" 2>/dev/null
+else
+	pass show "$password" | \
+		{ IFS= read -r pass; printf %s "$pass"; } | \
+		$typist
+fi
